@@ -13,6 +13,7 @@ import com.lubricentromp.api.entity.SaleDetail;
 import com.lubricentromp.api.entity.SalePayment;
 import com.lubricentromp.api.entity.Vehicle;
 import com.lubricentromp.api.entity.VehicleService;
+import com.lubricentromp.api.enums.SaleStatus;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
@@ -30,6 +31,7 @@ public class SaleMapper {
         sale.setOperationDate(request.operationDate() != null ? request.operationDate() : LocalDateTime.now());
         sale.setShift(request.shift());
         sale.setOperationType(request.operationType());
+        sale.setStatus(SaleStatus.COMPLETED);
         sale.setTotalCharged(normalizeMoney(request.totalCharged()));
         sale.setNotes(normalizeNullable(request.notes()));
         return sale;
@@ -86,6 +88,7 @@ public class SaleMapper {
                 sale.getOperationDate(),
                 sale.getShift(),
                 sale.getOperationType(),
+                sale.getStatus(),
                 normalizeMoney(sale.getCalculatedSubtotal()),
                 normalizeMoney(sale.getTotalCharged()),
                 sale.getNotes(),

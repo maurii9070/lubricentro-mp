@@ -33,4 +33,16 @@ public interface OilDrumRepository extends JpaRepository<OilDrum, Long> {
             @Param("productId") Long productId,
             @Param("status") DrumStatus status
     );
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            SELECT d FROM OilDrum d
+            WHERE d.product.id = :productId
+              AND d.status = :status
+            ORDER BY d.openedAt DESC
+            """)
+    List<OilDrum> findLatestByProductIdAndStatusForUpdate(
+            @Param("productId") Long productId,
+            @Param("status") DrumStatus status
+    );
 }

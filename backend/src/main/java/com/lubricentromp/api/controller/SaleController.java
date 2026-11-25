@@ -1,5 +1,7 @@
 package com.lubricentromp.api.controller;
 
+import com.lubricentromp.api.dto.SaleCancellationRequest;
+import com.lubricentromp.api.dto.SaleCancellationResponse;
 import com.lubricentromp.api.dto.SaleRequest;
 import com.lubricentromp.api.dto.SaleResponse;
 import com.lubricentromp.api.service.SaleService;
@@ -38,5 +40,14 @@ public class SaleController {
     @GetMapping("/vehicles/{vehicleId}/history")
     public List<SaleResponse> findServiceHistory(@PathVariable("vehicleId") Long vehicleId) {
         return saleService.getServiceHistoryByVehicleId(vehicleId);
+    }
+
+    @PostMapping("/{id}/cancel")
+    public SaleCancellationResponse cancel(
+            @PathVariable("id") Long id,
+            @Valid @RequestBody(required = false) SaleCancellationRequest request
+    ) {
+        String reason = request != null ? request.reason() : null;
+        return saleService.cancelSale(id, reason);
     }
 }

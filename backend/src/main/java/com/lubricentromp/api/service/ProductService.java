@@ -21,15 +21,18 @@ public class ProductService {
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
     private final ProductMapper productMapper;
+    private final StockMovementService stockMovementService;
 
     public ProductService(
             ProductRepository productRepository,
             CategoryRepository categoryRepository,
-            ProductMapper productMapper
+            ProductMapper productMapper,
+            StockMovementService stockMovementService
     ) {
         this.productRepository = productRepository;
         this.categoryRepository = categoryRepository;
         this.productMapper = productMapper;
+        this.stockMovementService = stockMovementService;
     }
 
     public List<ProductResponse> listActive() {
@@ -107,7 +110,13 @@ public class ProductService {
         }
         product.setWarehouseStock(product.getWarehouseStock() - quantity);
         product.setLocalStock(product.getLocalStock() + quantity);
-        return productMapper.toResponse(productRepository.save(product));
+        Product savedProduct = productRepository.save(product);
+        stockMovementService.registerLocalTransfer(
+                savedProduct,
+                quantity,
+                "Traslado de depósito a local: " + quantity + " unidad(es)."
+        );
+        return productMapper.toResponse(savedProduct);
     }
 
     private Product findProduct(Long id) {

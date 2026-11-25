@@ -1,6 +1,7 @@
 package com.lubricentromp.api.entity;
 
 import com.lubricentromp.api.enums.OperationType;
+import com.lubricentromp.api.enums.SaleStatus;
 import com.lubricentromp.api.enums.Shift;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -43,6 +44,10 @@ public class Sale {
 
     @Column(name = "total_charged", nullable = false, precision = 10, scale = 2)
     private BigDecimal totalCharged;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 20)
+    private SaleStatus status = SaleStatus.COMPLETED;
 
     @Column(name = "notes", columnDefinition = "text")
     private String notes;

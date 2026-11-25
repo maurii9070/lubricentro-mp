@@ -6,16 +6,19 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.lubricentromp.api.dto.SaleCancellationResponse;
 import com.lubricentromp.api.dto.SaleDetailRequest;
 import com.lubricentromp.api.dto.SalePaymentRequest;
 import com.lubricentromp.api.dto.SaleRequest;
 import com.lubricentromp.api.dto.SaleResponse;
+import com.lubricentromp.api.dto.StockMovementResponse;
 import com.lubricentromp.api.dto.VehicleServiceRequest;
 import com.lubricentromp.api.entity.Category;
 import com.lubricentromp.api.entity.OilDrum;
@@ -23,12 +26,16 @@ import com.lubricentromp.api.entity.Product;
 import com.lubricentromp.api.entity.Sale;
 import com.lubricentromp.api.entity.SaleDetail;
 import com.lubricentromp.api.entity.SalePayment;
+import com.lubricentromp.api.entity.StockMovement;
 import com.lubricentromp.api.entity.Vehicle;
 import com.lubricentromp.api.entity.VehicleService;
 import com.lubricentromp.api.enums.DrumStatus;
+import com.lubricentromp.api.enums.MovementType;
 import com.lubricentromp.api.enums.OperationType;
 import com.lubricentromp.api.enums.PaymentMethod;
+import com.lubricentromp.api.enums.SaleStatus;
 import com.lubricentromp.api.enums.Shift;
+import com.lubricentromp.api.enums.StockLocation;
 import com.lubricentromp.api.exception.BusinessRuleException;
 import com.lubricentromp.api.exception.ResourceNotFoundException;
 import com.lubricentromp.api.mapper.SaleMapper;
@@ -76,6 +83,9 @@ class SaleServiceTest {
     @Mock
     private VehicleRepository vehicleRepository;
 
+    @Mock
+    private StockMovementService stockMovementService;
+
     private SaleService saleService;
 
     @BeforeEach
@@ -88,6 +98,7 @@ class SaleServiceTest {
                 productRepository,
                 oilDrumRepository,
                 vehicleRepository,
+                stockMovementService,
                 new SaleMapper()
         );
     }
@@ -534,6 +545,253 @@ class SaleServiceTest {
         );
 
         verifyNoInteractions(vehicleServiceRepository);
+    }
+
+    @Test
+    void createQuickSaleShouldRegisterSaleExitMovementForLocalStock() {
+        Product filter = product(1L, "FAP-9013", "Filtro de aceite", "Filtro de Aceite", "1500.00", 10, true, true);
+        when(productRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(filter));
+        when(oilDrumRepository.existsByProductId(1L)).thenReturn(false);
+        stubSaleSave(100L);
+        stubDetailSave();
+        stubPaymentSave();
+
+        saleService.createSale(new SaleRequest(
+                OPERATION_DATE,
+                Shift.MORNING,
+                OperationType.QUICK_SALE,
+                new BigDecimal("3000.00"),
+                null,
+                null,
+                List.of(new SaleDetailRequest(1L, null, new BigDecimal("2"), null)),
+                List.of(new SalePaymentRequest(PaymentMethod.CASH, new BigDecimal("3000.00")))
+        ));
+
+        verify(stockMovementService).registerSaleExit(
+                eq(filter),
+                any(Sale.class),
+                eq(StockLocation.LOCAL),
+                eq(new BigDecimal("2.00")),
+                eq("Salida por venta #100.")
+        );
+    }
+
+    @Test
+    void createServiceShouldRegisterSaleExitMovementForDrumLiters() {
+        Product oil = product(10L, "AT-15W40", "Aceite 15W40", "Aceite Tambor", "5000.00", 3, true, true);
+        Vehicle vehicle = vehicle(5L, "AB123CD", "Peugeot 408");
+        OilDrum drum = drum(50L, oil, "20.00");
+
+        when(vehicleRepository.findById(5L)).thenReturn(Optional.of(vehicle));
+        when(productRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(oil));
+        when(oilDrumRepository.findByProductIdAndStatusForUpdate(10L, DrumStatus.OPEN))
+                .thenReturn(List.of(drum));
+        stubSaleSave(100L);
+        stubDetailSave();
+        stubPaymentSave();
+        when(vehicleServiceRepository.save(any(VehicleService.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        saleService.createSale(new SaleRequest(
+                OPERATION_DATE,
+                Shift.AFTERNOON,
+                OperationType.SERVICE,
+                new BigDecimal("22500.00"),
+                null,
+                new VehicleServiceRequest(5L, 50000, null),
+                List.of(new SaleDetailRequest(10L, null, new BigDecimal("4.5"), null)),
+                List.of(new SalePaymentRequest(PaymentMethod.CASH, new BigDecimal("22500.00")))
+        ));
+
+        verify(stockMovementService).registerSaleExit(
+                eq(oil),
+                any(Sale.class),
+                eq(StockLocation.OPEN_DRUM),
+                eq(new BigDecimal("4.50")),
+                eq("Salida por venta #100.")
+        );
+    }
+
+    @Test
+    void cancelSaleShouldRestoreLocalStockAndRegisterCancellationMovement() {
+        Sale sale = sale(100L, OperationType.QUICK_SALE);
+        Product filter = product(1L, "FAP-9013", "Filtro de aceite", "Filtro de Aceite", "1500.00", 8, true, true);
+        StockMovement exit = movement(sale, filter, StockLocation.LOCAL, "-2.00");
+
+        when(saleRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(sale));
+        when(stockMovementService.findSaleExitMovementsBySaleId(100L)).thenReturn(List.of(exit));
+        when(productRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(filter));
+        when(stockMovementService.registerSaleCancellation(
+                eq(filter),
+                eq(sale),
+                eq(StockLocation.LOCAL),
+                eq(new BigDecimal("2.00")),
+                eq("Cliente devolvió el producto.")
+        )).thenReturn(cancellationResponse(sale, filter, StockLocation.LOCAL, "2.00"));
+
+        SaleCancellationResponse response = saleService.cancelSale(100L, "Cliente devolvió el producto.");
+
+        assertEquals(100L, response.saleId());
+        assertEquals(SaleStatus.CANCELLED, response.status());
+        assertEquals("Cliente devolvió el producto.", response.reason());
+        assertEquals(1, response.movements().size());
+        assertEquals(10, filter.getLocalStock());
+        assertEquals(SaleStatus.CANCELLED, sale.getStatus());
+        verify(productRepository).save(filter);
+        verify(saleRepository).save(sale);
+    }
+
+    @Test
+    void cancelSaleShouldRestoreLitersInOpenDrum() {
+        Sale sale = sale(101L, OperationType.SERVICE);
+        Product oil = product(10L, "AT-15W40", "Aceite 15W40", "Aceite Tambor", "5000.00", 3, true, true);
+        OilDrum drum = drum(50L, oil, "15.50");
+        StockMovement exit = movement(sale, oil, StockLocation.OPEN_DRUM, "-4.50");
+
+        when(saleRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(sale));
+        when(stockMovementService.findSaleExitMovementsBySaleId(101L)).thenReturn(List.of(exit));
+        when(productRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(oil));
+        when(oilDrumRepository.findByProductIdAndStatusForUpdate(10L, DrumStatus.OPEN))
+                .thenReturn(List.of(drum));
+        when(stockMovementService.registerSaleCancellation(any(), any(), any(), any(), any()))
+                .thenReturn(cancellationResponse(sale, oil, StockLocation.OPEN_DRUM, "4.50"));
+
+        SaleCancellationResponse response = saleService.cancelSale(101L, null);
+
+        assertEquals("Anulación de venta #101.", response.reason());
+        assertEquals(0, new BigDecimal("20.00").compareTo(drum.getRemainingLiters()));
+        verify(oilDrumRepository).save(drum);
+        assertEquals(SaleStatus.CANCELLED, sale.getStatus());
+    }
+
+    @Test
+    void cancelSaleShouldReopenEmptyDrumWhenThereIsNoOpenDrum() {
+        Sale sale = sale(102L, OperationType.SERVICE);
+        Product oil = product(10L, "AT-15W40", "Aceite 15W40", "Aceite Tambor", "5000.00", 3, true, true);
+        OilDrum drum = drum(50L, oil, "0.00");
+        drum.setStatus(DrumStatus.EMPTY);
+        StockMovement exit = movement(sale, oil, StockLocation.OPEN_DRUM, "-4.50");
+
+        when(saleRepository.findByIdForUpdate(102L)).thenReturn(Optional.of(sale));
+        when(stockMovementService.findSaleExitMovementsBySaleId(102L)).thenReturn(List.of(exit));
+        when(productRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(oil));
+        when(oilDrumRepository.findByProductIdAndStatusForUpdate(10L, DrumStatus.OPEN))
+                .thenReturn(List.of());
+        when(oilDrumRepository.findLatestByProductIdAndStatusForUpdate(10L, DrumStatus.EMPTY))
+                .thenReturn(List.of(drum));
+        when(stockMovementService.registerSaleCancellation(any(), any(), any(), any(), any()))
+                .thenReturn(cancellationResponse(sale, oil, StockLocation.OPEN_DRUM, "4.50"));
+
+        saleService.cancelSale(102L, "Devolución de aceite");
+
+        assertEquals(DrumStatus.OPEN, drum.getStatus());
+        assertEquals(0, new BigDecimal("4.50").compareTo(drum.getRemainingLiters()));
+        assertTrue(drum.getNotes().contains("Reabierto por anulación de venta #102."));
+        verify(oilDrumRepository).save(drum);
+    }
+
+    @Test
+    void cancelSaleShouldRejectDrumRestorationWhenCapacityIsExceeded() {
+        Sale sale = sale(103L, OperationType.SERVICE);
+        Product oil = product(10L, "AT-15W40", "Aceite 15W40", "Aceite Tambor", "5000.00", 3, true, true);
+        OilDrum drum = drum(50L, oil, "18.00");
+        StockMovement exit = movement(sale, oil, StockLocation.OPEN_DRUM, "-4.50");
+
+        when(saleRepository.findByIdForUpdate(103L)).thenReturn(Optional.of(sale));
+        when(stockMovementService.findSaleExitMovementsBySaleId(103L)).thenReturn(List.of(exit));
+        when(productRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(oil));
+        when(oilDrumRepository.findByProductIdAndStatusForUpdate(10L, DrumStatus.OPEN))
+                .thenReturn(List.of(drum));
+
+        BusinessRuleException exception = assertThrows(
+                BusinessRuleException.class,
+                () -> saleService.cancelSale(103L, "Anulación")
+        );
+
+        assertTrue(exception.getMessage().contains("supera la capacidad"));
+        assertEquals(SaleStatus.COMPLETED, sale.getStatus());
+        verify(oilDrumRepository, never()).save(any(OilDrum.class));
+        verify(saleRepository, never()).save(any(Sale.class));
+    }
+
+    @Test
+    void cancelSaleShouldRejectAlreadyCancelledSale() {
+        Sale sale = sale(104L, OperationType.QUICK_SALE);
+        sale.setStatus(SaleStatus.CANCELLED);
+        when(saleRepository.findByIdForUpdate(104L)).thenReturn(Optional.of(sale));
+
+        BusinessRuleException exception = assertThrows(
+                BusinessRuleException.class,
+                () -> saleService.cancelSale(104L, "Anulación")
+        );
+
+        assertTrue(exception.getMessage().contains("ya está anulada"));
+        verifyNoInteractions(stockMovementService);
+        verify(saleRepository, never()).save(any(Sale.class));
+    }
+
+    @Test
+    void cancelSaleShouldRejectMissingSale() {
+        when(saleRepository.findByIdForUpdate(99L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class, () -> saleService.cancelSale(99L, "Anulación"));
+        verifyNoInteractions(stockMovementService);
+    }
+
+    @Test
+    void cancelSaleShouldRestoreStockFromDetailsWhenThereAreNoAuditMovements() {
+        Sale sale = sale(105L, OperationType.QUICK_SALE);
+        Product filter = product(1L, "FAP-9013", "Filtro de aceite", "Filtro de Aceite", "1500.00", 8, true, true);
+        SaleDetail detail = detail(sale, filter, "FAP-9013 - Filtro de aceite", "2", "1500.00");
+
+        when(saleRepository.findByIdForUpdate(105L)).thenReturn(Optional.of(sale));
+        when(stockMovementService.findSaleExitMovementsBySaleId(105L)).thenReturn(List.of());
+        when(saleDetailRepository.findBySaleIdOrderByIdAsc(105L)).thenReturn(List.of(detail));
+        when(productRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(filter));
+        when(stockMovementService.registerSaleCancellation(any(), any(), any(), any(), any()))
+                .thenReturn(cancellationResponse(sale, filter, StockLocation.LOCAL, "2.00"));
+
+        saleService.cancelSale(105L, "Venta duplicada");
+
+        assertEquals(10, filter.getLocalStock());
+        verify(stockMovementService).registerSaleCancellation(
+                eq(filter),
+                eq(sale),
+                eq(StockLocation.LOCAL),
+                eq(new BigDecimal("2.00")),
+                eq("Venta duplicada")
+        );
+    }
+
+    private StockMovement movement(Sale sale, Product product, StockLocation location, String quantity) {
+        StockMovement movement = new StockMovement();
+        movement.setId(500L);
+        movement.setSale(sale);
+        movement.setProduct(product);
+        movement.setMovementType(MovementType.SALE_EXIT);
+        movement.setLocation(location);
+        movement.setQuantity(new BigDecimal(quantity));
+        movement.setMovementDate(OPERATION_DATE);
+        return movement;
+    }
+
+    private StockMovementResponse cancellationResponse(
+            Sale sale,
+            Product product,
+            StockLocation location,
+            String quantity
+    ) {
+        return new StockMovementResponse(
+                600L,
+                product.getId(),
+                product.getName(),
+                sale.getId(),
+                MovementType.SALE_CANCELLATION,
+                location,
+                new BigDecimal(quantity),
+                OPERATION_DATE,
+                "Anulación de venta #" + sale.getId() + "."
+        );
     }
 
     private void stubSaleSave(Long id) {
