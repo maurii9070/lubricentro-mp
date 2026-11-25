@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -27,6 +28,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -39,11 +41,19 @@ class OilDrumServiceTest {
     @Mock
     private ProductRepository productRepository;
 
+    @Mock
+    private StockMovementService stockMovementService;
+
     private OilDrumService oilDrumService;
 
     @BeforeEach
     void setUp() {
-        oilDrumService = new OilDrumService(oilDrumRepository, productRepository, new OilDrumMapper());
+        oilDrumService = new OilDrumService(
+                oilDrumRepository,
+                productRepository,
+                new OilDrumMapper(),
+                stockMovementService
+        );
     }
 
     @Test
@@ -76,6 +86,13 @@ class OilDrumServiceTest {
         assertEquals("Tambor nuevo", response.notes());
         verify(productRepository).save(product);
         verify(oilDrumRepository).save(any(OilDrum.class));
+        ArgumentCaptor<OilDrum> drumCaptor = ArgumentCaptor.forClass(OilDrum.class);
+        verify(stockMovementService).registerDrumOpening(
+                eq(product),
+                drumCaptor.capture(),
+                eq("Apertura de tambor: 20.00 L (se descuenta 1 unidad del stock local).")
+        );
+        assertEquals(50L, drumCaptor.getValue().getId());
     }
 
     @Test

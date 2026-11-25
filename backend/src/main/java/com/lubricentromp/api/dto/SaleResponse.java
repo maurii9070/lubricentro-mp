@@ -1,6 +1,7 @@
 package com.lubricentromp.api.dto;
 
 import com.lubricentromp.api.enums.OperationType;
+import com.lubricentromp.api.enums.SaleStatus;
 import com.lubricentromp.api.enums.Shift;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -11,6 +12,7 @@ public record SaleResponse(
         LocalDateTime operationDate,
         Shift shift,
         OperationType operationType,
+        SaleStatus status,
         BigDecimal calculatedSubtotal,
         BigDecimal totalCharged,
         String notes,

@@ -39,11 +39,19 @@ class ProductServiceTest {
     @Mock
     private CategoryRepository categoryRepository;
 
+    @Mock
+    private StockMovementService stockMovementService;
+
     private ProductService productService;
 
     @BeforeEach
     void setUp() {
-        productService = new ProductService(productRepository, categoryRepository, new ProductMapper());
+        productService = new ProductService(
+                productRepository,
+                categoryRepository,
+                new ProductMapper(),
+                stockMovementService
+        );
     }
 
     @Test
@@ -265,6 +273,11 @@ class ProductServiceTest {
         assertEquals(7, response.warehouseStock());
         assertEquals(5, product.getLocalStock());
         assertEquals(7, product.getWarehouseStock());
+        verify(stockMovementService).registerLocalTransfer(
+                product,
+                3,
+                "Traslado de depósito a local: 3 unidad(es)."
+        );
     }
 
     @Test

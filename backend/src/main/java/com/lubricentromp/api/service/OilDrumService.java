@@ -24,15 +24,18 @@ public class OilDrumService {
     private final OilDrumRepository oilDrumRepository;
     private final ProductRepository productRepository;
     private final OilDrumMapper oilDrumMapper;
+    private final StockMovementService stockMovementService;
 
     public OilDrumService(
             OilDrumRepository oilDrumRepository,
             ProductRepository productRepository,
-            OilDrumMapper oilDrumMapper
+            OilDrumMapper oilDrumMapper,
+            StockMovementService stockMovementService
     ) {
         this.oilDrumRepository = oilDrumRepository;
         this.productRepository = productRepository;
         this.oilDrumMapper = oilDrumMapper;
+        this.stockMovementService = stockMovementService;
     }
 
     public List<OilDrumResponse> listOpenDrums() {
@@ -70,7 +73,15 @@ public class OilDrumService {
         productRepository.save(product);
 
         OilDrum drum = oilDrumMapper.toEntity(product, capacityLiters, notes);
-        return oilDrumMapper.toResponse(oilDrumRepository.save(drum));
+        OilDrum savedDrum = oilDrumRepository.save(drum);
+        stockMovementService.registerDrumOpening(
+                product,
+                savedDrum,
+                "Apertura de tambor: "
+                        + savedDrum.getCapacityLiters().setScale(2, RoundingMode.HALF_UP).toPlainString()
+                        + " L (se descuenta 1 unidad del stock local)."
+        );
+        return oilDrumMapper.toResponse(savedDrum);
     }
 
     @Transactional

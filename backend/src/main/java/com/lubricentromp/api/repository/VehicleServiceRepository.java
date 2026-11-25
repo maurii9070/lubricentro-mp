@@ -1,6 +1,7 @@
 package com.lubricentromp.api.repository;
 
 import com.lubricentromp.api.entity.VehicleService;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -24,4 +25,11 @@ public interface VehicleServiceRepository extends JpaRepository<VehicleService, 
             WHERE vs.sale.id = :saleId
             """)
     Optional<VehicleService> findBySaleIdWithVehicle(@Param("saleId") Long saleId);
+
+    @Query("""
+            SELECT vs FROM VehicleService vs
+            JOIN FETCH vs.vehicle
+            WHERE vs.sale.id IN :saleIds
+            """)
+    List<VehicleService> findBySaleIdInWithVehicle(@Param("saleIds") Collection<Long> saleIds);
 }

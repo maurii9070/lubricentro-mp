@@ -1,19 +1,24 @@
 package com.lubricentromp.api.service;
 
+import com.lubricentromp.api.dto.SaleCancellationResponse;
 import com.lubricentromp.api.dto.SaleDetailRequest;
 import com.lubricentromp.api.dto.SalePaymentRequest;
 import com.lubricentromp.api.dto.SaleRequest;
 import com.lubricentromp.api.dto.SaleResponse;
+import com.lubricentromp.api.dto.StockMovementResponse;
 import com.lubricentromp.api.entity.OilDrum;
 import com.lubricentromp.api.entity.Product;
 import com.lubricentromp.api.entity.Sale;
 import com.lubricentromp.api.entity.SaleDetail;
 import com.lubricentromp.api.entity.SalePayment;
+import com.lubricentromp.api.entity.StockMovement;
 import com.lubricentromp.api.entity.Vehicle;
 // La entidad VehicleService convive con el servicio VehicleService de la Etapa 2; este import apunta a la entidad.
 import com.lubricentromp.api.entity.VehicleService;
 import com.lubricentromp.api.enums.DrumStatus;
 import com.lubricentromp.api.enums.OperationType;
+import com.lubricentromp.api.enums.SaleStatus;
+import com.lubricentromp.api.enums.StockLocation;
 import com.lubricentromp.api.exception.BusinessRuleException;
 import com.lubricentromp.api.exception.ResourceNotFoundException;
 import com.lubricentromp.api.mapper.SaleMapper;
@@ -37,6 +42,7 @@ public class SaleService {
 
     private static final String DRUM_CATEGORY_NAME = "Aceite Tambor";
     private static final int DESCRIPTION_MAX_LENGTH = 255;
+    private static final int NOTES_MAX_LENGTH = 255;
 
     private final SaleRepository saleRepository;
     private final VehicleServiceRepository vehicleServiceRepository;
@@ -45,6 +51,7 @@ public class SaleService {
     private final ProductRepository productRepository;
     private final OilDrumRepository oilDrumRepository;
     private final VehicleRepository vehicleRepository;
+    private final StockMovementService stockMovementService;
     private final SaleMapper saleMapper;
 
     public SaleService(
@@ -55,6 +62,7 @@ public class SaleService {
             ProductRepository productRepository,
             OilDrumRepository oilDrumRepository,
             VehicleRepository vehicleRepository,
+            StockMovementService stockMovementService,
             SaleMapper saleMapper
     ) {
         this.saleRepository = saleRepository;
@@ -64,6 +72,7 @@ public class SaleService {
         this.productRepository = productRepository;
         this.oilDrumRepository = oilDrumRepository;
         this.vehicleRepository = vehicleRepository;
+        this.stockMovementService = stockMovementService;
         this.saleMapper = saleMapper;
     }
 
@@ -75,11 +84,15 @@ public class SaleService {
 
         Sale sale = saleMapper.toEntity(request);
         List<SaleDetail> details = new ArrayList<>();
+        List<PendingMovement> pendingMovements = new ArrayList<>();
         BigDecimal calculatedSubtotal = BigDecimal.ZERO;
 
         for (SaleDetailRequest item : request.items()) {
             ResolvedItem resolvedItem = resolveItem(sale, item);
             details.add(resolvedItem.detail());
+            if (resolvedItem.movement() != null) {
+                pendingMovements.add(resolvedItem.movement());
+            }
             calculatedSubtotal = calculatedSubtotal.add(resolvedItem.subtotal());
         }
 
@@ -102,7 +115,54 @@ public class SaleService {
             vehicleService = vehicleServiceRepository.save(vehicleService);
         }
 
+        registerSaleExits(sale, pendingMovements);
+
         return saleMapper.toResponse(sale, vehicleService, savedDetails, savedPayments);
+    }
+
+    @Transactional
+    public SaleCancellationResponse cancelSale(Long saleId, String reason) {
+        if (saleId == null) {
+            throw new BusinessRuleException("El id de la venta es obligatorio.");
+        }
+        Sale sale = saleRepository.findByIdForUpdate(saleId)
+                .orElseThrow(() -> new ResourceNotFoundException("No existe la venta con id " + saleId + "."));
+        if (sale.getStatus() == SaleStatus.CANCELLED) {
+            throw new BusinessRuleException("La venta #" + saleId + " ya está anulada.");
+        }
+        String cancellationReason = buildCancellationReason(saleId, reason);
+
+        List<StockMovementResponse> movements = new ArrayList<>();
+        for (Reversal reversal : resolveReversals(sale)) {
+            Product product = productRepository.findByIdForUpdate(reversal.productId())
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "No existe el producto con id " + reversal.productId() + "."
+                    ));
+            if (reversal.location() == StockLocation.OPEN_DRUM) {
+                restoreDrumLiters(product, reversal.quantity(), saleId);
+            } else {
+                restoreLocalStock(product, reversal.quantity());
+            }
+            movements.add(stockMovementService.registerSaleCancellation(
+                    product,
+                    sale,
+                    reversal.location(),
+                    reversal.quantity(),
+                    cancellationReason
+            ));
+        }
+
+        sale.setStatus(SaleStatus.CANCELLED);
+        saleRepository.save(sale);
+
+        return new SaleCancellationResponse(
+                sale.getId(),
+                sale.getStatus(),
+                sale.getOperationDate(),
+                SaleMapper.normalizeMoney(sale.getTotalCharged()),
+                cancellationReason,
+                movements
+        );
     }
 
     public SaleResponse getSaleById(Long id) {
@@ -218,7 +278,7 @@ public class SaleService {
         if (unitPrice.signum() < 0) {
             throw new BusinessRuleException("El precio unitario no puede ser negativo.");
         }
-        return buildResolvedItem(sale, null, description, quantity, unitPrice);
+        return buildResolvedItem(sale, null, description, quantity, unitPrice, null);
     }
 
     private ResolvedItem resolveProductItem(Sale sale, SaleDetailRequest item, BigDecimal quantity) {
@@ -237,11 +297,14 @@ public class SaleService {
             throw new BusinessRuleException("El producto '" + product.getName() + "' no tiene un precio válido.");
         }
 
+        PendingMovement movement = null;
         if (product.isTracksStock()) {
             if (isDrumProduct(product)) {
                 applyDrumDiscount(product, quantity);
+                movement = new PendingMovement(product, StockLocation.OPEN_DRUM, quantity);
             } else {
                 applyLocalStockDiscount(product, quantity);
+                movement = new PendingMovement(product, StockLocation.LOCAL, quantity);
             }
         }
 
@@ -250,7 +313,8 @@ public class SaleService {
                 product,
                 buildDescription(product),
                 quantity,
-                unitPrice
+                unitPrice,
+                movement
         );
     }
 
@@ -259,7 +323,8 @@ public class SaleService {
             Product product,
             String description,
             BigDecimal quantity,
-            BigDecimal unitPrice
+            BigDecimal unitPrice,
+            PendingMovement movement
     ) {
         if (description.length() > DESCRIPTION_MAX_LENGTH) {
             throw new BusinessRuleException(
@@ -268,7 +333,7 @@ public class SaleService {
         }
         SaleDetail detail = saleMapper.toDetailEntity(sale, product, description, quantity, unitPrice);
         BigDecimal subtotal = SaleMapper.normalizeMoney(quantity.multiply(unitPrice));
-        return new ResolvedItem(detail, subtotal);
+        return new ResolvedItem(detail, subtotal, movement);
     }
 
     private String buildDescription(Product product) {
@@ -333,6 +398,136 @@ public class SaleService {
         productRepository.save(product);
     }
 
-    private record ResolvedItem(SaleDetail detail, BigDecimal subtotal) {
+    private void registerSaleExits(Sale sale, List<PendingMovement> pendingMovements) {
+        for (PendingMovement pendingMovement : pendingMovements) {
+            stockMovementService.registerSaleExit(
+                    pendingMovement.product(),
+                    sale,
+                    pendingMovement.location(),
+                    pendingMovement.quantity(),
+                    "Salida por venta #" + sale.getId() + "."
+            );
+        }
+    }
+
+    private List<Reversal> resolveReversals(Sale sale) {
+        List<StockMovement> exits = stockMovementService.findSaleExitMovementsBySaleId(sale.getId());
+        if (!exits.isEmpty()) {
+            return exits.stream()
+                    .map(movement -> new Reversal(
+                            movement.getProduct().getId(),
+                            movement.getLocation(),
+                            SaleMapper.normalizeQuantity(movement.getQuantity()).abs()
+                    ))
+                    .toList();
+        }
+        return buildReversalsFromDetails(sale);
+    }
+
+    private List<Reversal> buildReversalsFromDetails(Sale sale) {
+        List<Reversal> reversals = new ArrayList<>();
+        for (SaleDetail detail : saleDetailRepository.findBySaleIdOrderByIdAsc(sale.getId())) {
+            Product product = detail.getProduct();
+            if (product == null || !product.isTracksStock()) {
+                continue;
+            }
+            StockLocation location = isDrumProduct(product) ? StockLocation.OPEN_DRUM : StockLocation.LOCAL;
+            reversals.add(new Reversal(
+                    product.getId(),
+                    location,
+                    SaleMapper.normalizeQuantity(detail.getQuantity())
+            ));
+        }
+        return reversals;
+    }
+
+    private void restoreLocalStock(Product product, BigDecimal quantity) {
+        if (quantity.stripTrailingZeros().scale() > 0) {
+            throw new BusinessRuleException("La cantidad a devolver del producto '"
+                    + product.getName()
+                    + "' debe ser un número entero.");
+        }
+        int units;
+        try {
+            units = quantity.intValueExact();
+        } catch (ArithmeticException exception) {
+            throw new BusinessRuleException("La cantidad a devolver del producto '"
+                    + product.getName()
+                    + "' es demasiado grande.");
+        }
+        long newStock = (long) product.getLocalStock() + units;
+        if (newStock > Integer.MAX_VALUE) {
+            throw new BusinessRuleException("Devolver " + units + " unidad(es) de '"
+                    + product.getName()
+                    + "' supera el stock máximo permitido.");
+        }
+        product.setLocalStock((int) newStock);
+        productRepository.save(product);
+    }
+
+    private void restoreDrumLiters(Product product, BigDecimal liters, Long saleId) {
+        List<OilDrum> openDrums = oilDrumRepository.findByProductIdAndStatusForUpdate(
+                product.getId(),
+                DrumStatus.OPEN
+        );
+        OilDrum drum;
+        if (!openDrums.isEmpty()) {
+            drum = openDrums.get(0);
+        } else {
+            drum = oilDrumRepository.findLatestByProductIdAndStatusForUpdate(product.getId(), DrumStatus.EMPTY)
+                    .stream()
+                    .findFirst()
+                    .orElseThrow(() -> new BusinessRuleException(
+                            "No hay un tambor abierto ni cerrado para devolver "
+                                    + formatLiters(liters)
+                                    + " L del producto '"
+                                    + product.getName()
+                                    + "'."
+                    ));
+            drum.setStatus(DrumStatus.OPEN);
+            drum.setNotes(appendCancellationNote(drum.getNotes(), saleId));
+        }
+        BigDecimal current = drum.getRemainingLiters() == null ? BigDecimal.ZERO : drum.getRemainingLiters();
+        BigDecimal newRemaining = SaleMapper.normalizeMoney(current.add(liters));
+        if (drum.getCapacityLiters() != null && newRemaining.compareTo(drum.getCapacityLiters()) > 0) {
+            throw new BusinessRuleException("No se pueden devolver "
+                    + formatLiters(liters)
+                    + " L al tambor de '"
+                    + product.getName()
+                    + "': supera la capacidad de "
+                    + formatLiters(drum.getCapacityLiters())
+                    + " L.");
+        }
+        drum.setRemainingLiters(newRemaining);
+        oilDrumRepository.save(drum);
+    }
+
+    private String appendCancellationNote(String notes, Long saleId) {
+        String note = "Reabierto por anulación de venta #" + saleId + ".";
+        String combined = notes == null || notes.isBlank() ? note : notes + " | " + note;
+        return combined.length() <= NOTES_MAX_LENGTH ? combined : combined.substring(0, NOTES_MAX_LENGTH);
+    }
+
+    private String buildCancellationReason(Long saleId, String reason) {
+        String normalized = SaleMapper.normalizeNullable(reason);
+        if (normalized == null) {
+            return "Anulación de venta #" + saleId + ".";
+        }
+        return normalized.length() <= NOTES_MAX_LENGTH
+                ? normalized
+                : normalized.substring(0, NOTES_MAX_LENGTH);
+    }
+
+    private String formatLiters(BigDecimal liters) {
+        return liters.setScale(2, RoundingMode.HALF_UP).toPlainString();
+    }
+
+    private record ResolvedItem(SaleDetail detail, BigDecimal subtotal, PendingMovement movement) {
+    }
+
+    private record PendingMovement(Product product, StockLocation location, BigDecimal quantity) {
+    }
+
+    private record Reversal(Long productId, StockLocation location, BigDecimal quantity) {
     }
 }
