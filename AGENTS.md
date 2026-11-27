@@ -40,3 +40,18 @@ Configuración por variables de entorno: `DB_URL`, `DB_USER`, `DB_PASSWORD`, `SH
 - La imagen de PostgreSQL 18 monta el volumen en `/var/lib/postgresql` (no `/var/lib/postgresql/data`). Es intencional; no "corregirlo".
 - Spring Boot 4 usa `spring-boot-starter-webmvc` (no `-web`) y starters de test por módulo (`spring-boot-starter-*-test`). No renombrar ni bajar versiones.
 - `.idea/` está en `.gitignore`; no commitear archivos del IDE.
+
+## Stack frontend (`/frontend`)
+
+- React + Vite + TypeScript (template `react-ts`), React Router, Axios, Zustand.
+- Estilos: Tailwind CSS v4 (`@tailwindcss/vite`) + shadcn/ui (componentes en `src/components/ui`).
+- Iconos: `lucide-react`. Notificaciones: `sonner`.
+- Variables de entorno Vite con prefijo `VITE_` (ej. `VITE_API_URL`).
+- Comandos (desde `/frontend`):
+  ```bash
+  npm run dev
+  npm run build
+  npm run preview
+  ```
+- Misma regla de idioma: código, archivos, carpetas, variables, interfaces, stores y rutas en inglés; toda la UI visible, menús, mensajes de error y documentación en español.
+- Infraestructura de contenedores con Podman (`podman compose`, `podman ps`, `podman exec`).
