@@ -1,3 +1,5 @@
+import type { SaleResponse } from '@/types/sale';
+
 export interface VehicleResponse {
   id: number;
   licensePlate: string;
@@ -13,3 +15,5 @@ export interface VehicleRequest {
   ownerName?: string | null;
   phone?: string | null;
 }
+
+export type VehicleServiceHistoryResponse = SaleResponse[];

@@ -1,4 +1,5 @@
 import type { OperationType, PaymentMethod, Shift } from '@/types/common';
+import type { StockMovementResponse } from '@/types/stockMovement';
 
 export interface SaleDetailRequest {
   productId?: number | null;
@@ -65,4 +66,17 @@ export interface SaleResponse {
   vehicleService: VehicleServiceResponse | null;
   items: SaleDetailResponse[];
   payments: SalePaymentResponse[];
+}
+
+export interface SaleCancellationRequest {
+  reason?: string | null;
+}
+
+export interface SaleCancellationResponse {
+  saleId: number;
+  status: 'COMPLETED' | 'CANCELLED';
+  operationDate: string;
+  totalCharged: number;
+  reason: string | null;
+  movements: StockMovementResponse[];
 }
